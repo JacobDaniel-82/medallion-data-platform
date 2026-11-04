@@ -39,7 +39,7 @@ def main():
         port=int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123")),
         username=os.getenv("CLICKHOUSE_USER", "default"),
         password=os.environ["CLICKHOUSE_PASSWORD"],
-        database="crypto_warehouse",
+        database="medallion_warehouse",
     )
 
     end = datetime.now(timezone.utc).replace(second=0, microsecond=0)

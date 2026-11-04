@@ -1,6 +1,6 @@
-CREATE DATABASE IF NOT EXISTS crypto_warehouse;
+CREATE DATABASE IF NOT EXISTS medallion_warehouse;
 
-CREATE TABLE IF NOT EXISTS crypto_warehouse.bronze_market_candles
+CREATE TABLE IF NOT EXISTS medallion_warehouse.bronze_market_candles
 (
     symbol String,
     `interval` String,

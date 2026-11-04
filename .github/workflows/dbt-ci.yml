@@ -56,7 +56,7 @@ jobs:
               urllib.request.urlopen(urllib.request.Request(url, data=q.encode())).read()
           for source in ("batch", "nifi"):
               run(f"""
-              INSERT INTO crypto_warehouse.bronze_market_candles
+              INSERT INTO medallion_warehouse.bronze_market_candles
               (symbol, `interval`, open_time, close_time, open_price, high_price, low_price, close_price, volume, number_of_trades, is_final, source)
               SELECT 'BTCUSDT', '1m',
                      toDateTime64('2026-01-01 00:00:00', 3, 'UTC') + toIntervalMinute(number),
@@ -76,7 +76,7 @@ jobs:
 
           # 21 customers: C0021 is a duplicate of C0001 (same email, different case), C0006 has no country
           run("""
-          INSERT INTO crypto_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
+          INSERT INTO medallion_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
           SELECT 'customers', number + 1,
                  concat('{"customer_code":"C', leftPad(toString(number + 1), 4, '0'),
                         '","full_name":"Test User ', toString(number + 1),
@@ -88,7 +88,7 @@ jobs:
           """)
 
           run("""
-          INSERT INTO crypto_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
+          INSERT INTO medallion_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
           SELECT 'products', number + 1,
                  concat('{"product_code":"P', leftPad(toString(number + 1), 3, '0'),
                         '","product_name":"Item ', toString(number + 1),
@@ -99,7 +99,7 @@ jobs:
 
           # 200 orders: mixed-case statuses, one order with quantity 0, some pointing at the duplicate customer
           run("""
-          INSERT INTO crypto_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
+          INSERT INTO medallion_warehouse.bronze_baserow_rows (table_name, row_id, payload, extracted_at)
           SELECT 'orders', number + 1,
                  concat('{"order_code":"O', leftPad(toString(number + 1), 5, '0'),
                         '","customer_code":"C', leftPad(toString(number % 21 + 1), 4, '0'),

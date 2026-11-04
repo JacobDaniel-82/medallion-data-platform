@@ -16,7 +16,7 @@ TABLES = {
 }
 
 CREATE_BRONZE = """
-CREATE TABLE IF NOT EXISTS crypto_warehouse.bronze_baserow_rows
+CREATE TABLE IF NOT EXISTS medallion_warehouse.bronze_baserow_rows
 (
     table_name LowCardinality(String),
     row_id UInt64,
@@ -55,7 +55,7 @@ def main():
         port=int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123")),
         username=os.getenv("CLICKHOUSE_USER", "default"),
         password=os.environ["CLICKHOUSE_PASSWORD"],
-        database="crypto_warehouse",
+        database="medallion_warehouse",
     )
     client.command(CREATE_BRONZE)
 

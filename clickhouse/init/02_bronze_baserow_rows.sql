@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS crypto_warehouse.bronze_baserow_rows
+CREATE TABLE IF NOT EXISTS medallion_warehouse.bronze_baserow_rows
 (
     table_name LowCardinality(String),
     row_id UInt64,

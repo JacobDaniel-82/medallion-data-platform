@@ -2,6 +2,6 @@ version: 2
 
 sources:
   - name: baserow_raw
-    schema: crypto_warehouse
+    schema: medallion_warehouse
     tables:
       - name: bronze_baserow_rows

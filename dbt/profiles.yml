@@ -3,7 +3,7 @@ crypto_medallion:
   outputs:
     dev:
       type: clickhouse
-      schema: crypto_warehouse
+      schema: medallion_warehouse
       host: "{{ env_var('CLICKHOUSE_HOST', 'localhost') }}"
       port: 8123
       user: default

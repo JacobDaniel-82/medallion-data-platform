@@ -2,6 +2,6 @@ version: 2
 
 sources:
   - name: bronze
-    schema: crypto_warehouse
+    schema: medallion_warehouse
     tables:
       - name: bronze_market_candles

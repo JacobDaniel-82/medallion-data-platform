@@ -5,7 +5,7 @@ services:
     container_name: crypto-clickhouse
     restart: unless-stopped
     environment:
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-crypto_warehouse}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-medallion_warehouse}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
@@ -128,9 +128,22 @@ services:
     volumes:
       - nifi_data:/opt/nifi/nifi-current
 
+  superset:
+    build: ./superset
+    image: medallion-superset:clickhouse
+    container_name: medallion-superset
+    restart: unless-stopped
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:?Set SUPERSET_SECRET_KEY in .env}
+    ports:
+      - "${SUPERSET_WEB_PORT:-8088}:8088"
+    volumes:
+      - superset_home:/app/superset_home
+
 
 
 volumes:
   clickhouse_data:
   airflow_postgres_data:
   nifi_data:
+  superset_home:
