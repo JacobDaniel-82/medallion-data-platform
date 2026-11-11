@@ -86,7 +86,7 @@ A Superset dashboard, **Medallion Warehouse Analytics**, reads the gold and silv
 - `LIMIT n BY` for the top 3 products per category
 - `topKWeighted` and `retention()` for top categories and weekly customer retention
 
-![Dashboard](docs/dashboard.jpg)
+   ![Dashboard (crypto tab on top, e-commerce tab below)](docs/dashboard.jpg)
 
 Files:
 - `superset/Dockerfile`: Superset image with the `clickhouse-connect` driver.
