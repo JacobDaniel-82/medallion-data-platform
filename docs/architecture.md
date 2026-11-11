@@ -11,6 +11,7 @@ A data engineering platform that ingests data from three sources into ClickHouse
 - dbt: SQL transformations (ELT) and data quality tests
 - Docker Compose: Local service orchestration
 - GitHub Actions: Continuous integration
+- Apache Superset: Dashboard
 
 ## Data Sources
 - Binance public klines API, historical (BTCUSDT, 1 minute, rolling 30 days)
@@ -96,6 +97,7 @@ The live NiFi flow only collects while running. The daily crypto batch reload re
 - ClickHouse HTTP: http://localhost:8123
 - Airflow UI: http://localhost:8082
 - NiFi UI: https://localhost:8443/nifi
+- Superset UI: http://localhost:8088
 
 Configuration secrets belong in `.env`, which must not be committed.
 Use `.env.example` as the configuration template.

@@ -27,6 +27,7 @@ Binance REST API (live)    -> NiFi              -> ClickHouse bronze (crypto)
 Baserow REST API           -> Airflow + Python -> ClickHouse bronze (raw JSON)
 ClickHouse bronze -> dbt -> silver -> dbt -> gold
 ```
+- **Apache Superset:** Dashboards on the silver and gold layers, using a read-only ClickHouse user.
 
 ![dbt lineage](docs/lineage.png)
 
@@ -44,6 +45,7 @@ ClickHouse bronze -> dbt -> silver -> dbt -> gold
 - `gold_daily_price_summary`: daily open, high, low, close, volume, trades, price change and percent change, with a flag for complete days (1,440 candles).
 - `gold_hourly_market_stats`: hourly OHLC, volume and trades, with a flag for complete hours (60 candles).
 - `gold_daily_volatility`: daily high-low range as a percent of the open, a 7-day average range, and volume relative to the 7-day average (complete days only).
+- `gold_daily_volume_profile`: daily volume with a text sparkline of volume by hour of day, for the dashboard.
 
 ## Domain 2: Baserow E-commerce
 
@@ -70,6 +72,39 @@ Baserow holds three tables in a database named `ecommerce_demo`: `customers`, `p
 - **Crypto (13):** not-null checks on key columns, uniqueness of the daily volatility key, no duplicate candles in silver, valid price and volume values in silver, and sanity limits on candle counts per day and per hour in gold.
 - **Baserow (22 + checks inside):** not-null and uniqueness on keys, accepted values for order status, every order points to an existing customer and product, no orders are lost between silver and the gold fact table, and daily revenue reconciles with per-customer revenue.
 
+## Dashboard (Apache Superset)
+
+A Superset dashboard, **Medallion Warehouse Analytics**, reads the gold and silver layers with a read-only ClickHouse user. It has two tabs, Crypto Market and E-commerce, and its charts use ClickHouse-specific analytical functions:
+
+- `exponentialTimeDecayedAvg` as a window function for moving averages on price
+- `ASOF JOIN` to compare each hour with the closest earlier hour 24 hours back
+- `quantilesTDigest` for approximate volume and order-value percentiles
+- `histogram()` for the distribution of 1-minute returns
+- `ORDER BY ... WITH FILL` to expose missing hours as zero-candle rows
+- `sparkbar` for a text bar chart per day (built in dbt as `gold_daily_volume_profile`)
+- `corr`, `argMax`/`argMin`, and the `-If` combinators (`sumIf`, `countIf`, `uniqIf`)
+- `LIMIT n BY` for the top 3 products per category
+- `topKWeighted` and `retention()` for top categories and weekly customer retention
+
+![Dashboard](docs/dashboard.jpg)
+
+Files:
+- `superset/Dockerfile`: Superset image with the `clickhouse-connect` driver.
+- `superset/dashboard_queries.sql`: the SQL behind each dataset.
+- `superset/dashboard_export/`: the exported dashboard bundle. Import it from Dashboards, Import.
+
+Setup after `docker compose up -d`:
+
+1. Initialize Superset once:
+   `docker exec -it medallion-superset superset db upgrade`
+   `docker exec -it medallion-superset superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com`
+   `docker exec -it medallion-superset superset init`
+2. Create the read-only ClickHouse user (choose your own password):
+   `CREATE USER superset_ro IDENTIFIED BY '<password>'` and `GRANT SELECT ON medallion_warehouse.* TO superset_ro`
+3. In Superset (http://localhost:8088), add a ClickHouse Connect database with host `clickhouse`, port `8123`, database `medallion_warehouse` and the read-only user, then import `superset/dashboard_export/medallion_warehouse_analytics.zip`.
+
+Superset's SQL parser rejects some ClickHouse syntax, such as parametric aggregates like `sparkbar(24, 0, 23)(...)`. Queries that need it are built as dbt models and read with a plain `SELECT`.
+
 ## Handling Gaps and Reruns
 
 - The live NiFi flow only collects while it is running, so downtime leaves gaps. The daily crypto batch re-pulls the last 30 days and replaces its own `batch` rows without touching `nifi` rows. Silver deduplicates any overlap, so the batch reload heals gaps with no duplicates downstream.
@@ -93,6 +128,7 @@ Baserow holds three tables in a database named `ecommerce_demo`: `customers`, `p
 - `scripts/`: `load_historical_candles.py`, `load_baserow_tables.py`, `generate_baserow_mock_data.py`.
 - `docs/`: Architecture documentation and the dbt lineage screenshot.
 - `.github/workflows/`: CI workflow.
+- `superset/`: Superset image (ClickHouse driver), dashboard SQL, and the exported dashboard bundle.
 
 ## Running Locally
 
@@ -113,3 +149,4 @@ Baserow holds three tables in a database named `ecommerce_demo`: `customers`, `p
 - dbt scheduled through Airflow for both domains: done
 - CI with GitHub Actions: done
 - CD: future work
+- Superset dashboard: done
