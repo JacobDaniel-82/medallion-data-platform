@@ -111,6 +111,7 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./scripts:/opt/airflow/scripts
       - ./dbt:/opt/airflow/dbt
+      - ./contracts:/opt/airflow/contracts:ro      
     command: scheduler
 
   
