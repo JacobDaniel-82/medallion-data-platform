@@ -1,0 +1,53 @@
+contract: baserow_ecommerce
+version: 1.0.0
+owner: data-engineering
+description: Mock e-commerce data (customers, products, orders) from the Baserow ecommerce_demo database.
+source:
+  system: Baserow REST API
+  ingestion: Airflow + Python, daily full reload
+target: medallion_warehouse.bronze_baserow_rows
+grain: one row per (table_name, row_id)
+note: Baserow returns every value as text, so "type" means the text must parse as that type.
+
+entities:
+  customers:
+    fields:
+      - { name: customer_code, type: string, required: true, regex: '^C[0-9]{4}$' }
+      - { name: full_name, type: string, required: true }
+      - { name: email, type: string, required: true, regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$' }
+      - { name: country, type: string, required: false }
+      - { name: signup_date, type: date, required: true, rules: ["value <= today()"] }
+      - { name: is_active, type: string, required: true, allowed: ['true', 'false'] }
+    warehouse_checks:
+      - { name: customer_code_unique, severity: error, enforced_by: dbt test }
+      - { name: email_unique_case_insensitive, severity: warn, handled_by: silver_customers merges duplicates }
+      - { name: country_present, severity: warn, handled_by: silver_customers sets Unknown }
+
+  products:
+    fields:
+      - { name: product_code, type: string, required: true, regex: '^P[0-9]{3}$' }
+      - { name: product_name, type: string, required: true }
+      - { name: category, type: string, required: true }
+      - { name: unit_price, type: decimal, required: true, rules: ["value > 0"] }
+    warehouse_checks:
+      - { name: product_code_unique, severity: error, enforced_by: dbt test }
+
+  orders:
+    fields:
+      - { name: order_code, type: string, required: true, regex: '^O[0-9]{5}$' }
+      - { name: customer_code, type: string, required: true, regex: '^C[0-9]{4}$' }
+      - { name: product_code, type: string, required: true, regex: '^P[0-9]{3}$' }
+      - { name: quantity, type: int, required: true, rules: ["value > 0", "value <= 100"] }
+      - { name: order_date, type: date, required: true, rules: ["value <= today()", "value >= today() - 730"] }
+      - { name: status, type: string, required: true, allowed_case_insensitive: [Delivered, Shipped, Pending, Cancelled, Returned] }
+      - { name: discount_pct, type: decimal, required: true, rules: ["value >= 0", "value <= 100"] }
+    warehouse_checks:
+      - { name: order_code_unique, severity: error, enforced_by: dbt test }
+      - { name: customer_exists, severity: error, enforced_by: dbt test }
+      - { name: product_exists, severity: error, enforced_by: dbt test }
+      - { name: status_casing_canonical, severity: warn, handled_by: silver_orders normalizes }
+
+sla:
+  freshness: { column: extracted_at, warn_after: 26 hours, error_after: 50 hours }
+  volume: { min_rows: { customers: 100, products: 20, orders: 1500 } }
+  quarantine: { max_reject_rate: 0.03, on_breach: fail_run }

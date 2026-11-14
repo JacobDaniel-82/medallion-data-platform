@@ -1,0 +1,35 @@
+contract: binance_klines_batch
+version: 1.0.0
+owner: data-engineering
+description: Historical BTCUSDT 1-minute candles from the Binance klines API.
+source:
+  system: Binance REST API /api/v3/klines
+  ingestion: Airflow + Python, daily reload of the last 30 days
+target: medallion_warehouse.bronze_market_candles
+grain: one row per (symbol, interval, open_time)
+
+fields:
+  - { name: open_time, type: int, unit: epoch_ms, required: true, rules: ["value > 0", "modulo(value, 60000) = 0"] }
+  - { name: open_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: high_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: low_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: close_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: volume, type: decimal, required: true, rules: ["value >= 0"] }
+  - { name: close_time, type: int, unit: epoch_ms, required: true }
+  - { name: number_of_trades, type: int, required: true, rules: ["value >= 0"] }
+
+record_rules:
+  - { name: high_not_below_low, sql: "high_price >= low_price" }
+  - { name: high_covers_open_close, sql: "high_price >= greatest(open_price, close_price)" }
+  - { name: low_covers_open_close, sql: "low_price <= least(open_price, close_price)" }
+  - { name: one_minute_window, sql: "close_time - open_time = 59999" }
+  - { name: candle_is_closed, sql: "close_time < toUnixTimestamp64Milli(now64(3))" }
+
+warehouse_checks:
+  - { name: no_duplicate_candles_in_silver, severity: error, enforced_by: dbt test }
+  - { name: no_gaps_in_last_30_days, severity: warn, enforced_by: dbt test }
+
+sla:
+  freshness: { column: ingested_at, filter: "source = 'batch'", warn_after: 26 hours, error_after: 50 hours }
+  volume: { min_rows_per_load: 40000 }
+  quarantine: { max_reject_rate: 0.01, on_breach: fail_run }

@@ -1,0 +1,35 @@
+contract: binance_klines_live
+version: 1.0.0
+owner: data-engineering
+description: Live BTCUSDT 1-minute candles polled from the Binance klines API.
+source:
+  system: Binance REST API /api/v3/klines
+  ingestion: Apache NiFi, polled every 60 seconds, forming candle dropped
+target: medallion_warehouse.bronze_market_candles
+grain: one row per (symbol, interval, open_time)
+
+fields:
+  - { name: open_time, type: int, unit: epoch_ms, required: true, rules: ["value > 0", "modulo(value, 60000) = 0"] }
+  - { name: open_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: high_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: low_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: close_price, type: decimal, required: true, rules: ["value > 0"] }
+  - { name: volume, type: decimal, required: true, rules: ["value >= 0"] }
+  - { name: close_time, type: int, unit: epoch_ms, required: true }
+  - { name: number_of_trades, type: int, required: true, rules: ["value >= 0"] }
+
+record_rules:
+  - { name: high_not_below_low, sql: "high_price >= low_price" }
+  - { name: high_covers_open_close, sql: "high_price >= greatest(open_price, close_price)" }
+  - { name: low_covers_open_close, sql: "low_price <= least(open_price, close_price)" }
+  - { name: one_minute_window, sql: "close_time - open_time = 59999" }
+  - { name: candle_is_closed, sql: "close_time < toUnixTimestamp64Milli(now64(3))" }
+
+warehouse_checks:
+  - { name: duplicates_expected_from_overlapping_polls, severity: info, handled_by: silver dedupe }
+  - { name: price_jump_between_candles, severity: warn, rule: "close-to-close move above 2 percent in one minute", enforced_by: dbt test }
+
+sla:
+  freshness: { column: ingested_at, filter: "source = 'nifi'", warn_after: 5 minutes, error_after: 15 minutes }
+  volume: { min_candles_per_hour: 50 }
+  quarantine: { max_reject_rate: 0.05, on_breach: alert }
