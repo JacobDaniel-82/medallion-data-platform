@@ -72,6 +72,7 @@ services:
     env_file:
       - .env
     environment:
+      AIRFLOW__WEBSERVER__WORKERS: "1"
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_metadata_local@postgres/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
