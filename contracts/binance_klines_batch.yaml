@@ -27,7 +27,7 @@ record_rules:
 
 warehouse_checks:
   - { name: no_duplicate_candles_in_silver, severity: error, enforced_by: dbt test }
-  - { name: no_gaps_in_last_30_days, severity: warn, enforced_by: dbt test }
+  - { name: no_gaps_in_last_6_hours, severity: warn_then_error, enforced_by: "run_checks.py candle_gap_minutes_6h (warn above 0 missing minutes, error above 30, blocks dbt)" }
 
 sla:
   freshness: { column: ingested_at, filter: "source = 'batch'", warn_after: 26 hours, error_after: 50 hours }

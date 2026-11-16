@@ -26,14 +26,26 @@ def to_seconds(text):
     number, unit = str(text).split()
     return int(number) * UNIT_SECONDS[unit]
 
+DOWN_FLAG = Path("/tmp/monitor_clickhouse_down")
 
-client = clickhouse_connect.get_client(
-    host=os.getenv("CLICKHOUSE_HOST", "localhost"),
-    port=int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123")),
-    username=os.getenv("CLICKHOUSE_USER", "default"),
-    password=os.environ["CLICKHOUSE_PASSWORD"],
-    database="medallion_warehouse",
-)
+try:
+    client = clickhouse_connect.get_client(
+        host=os.getenv("CLICKHOUSE_HOST", "localhost"),
+        port=int(os.getenv("CLICKHOUSE_HTTP_PORT", "8123")),
+        username=os.getenv("CLICKHOUSE_USER", "default"),
+        password=os.environ["CLICKHOUSE_PASSWORD"],
+        database="medallion_warehouse",
+    )
+except Exception as exc:
+    if not DOWN_FLAG.exists():
+        alert.send(f"[ERROR] monitor cannot reach ClickHouse, so no checks could run: {str(exc)[:200]}")
+        DOWN_FLAG.touch()
+    print(f"Cannot reach ClickHouse: {exc}")
+    sys.exit(1)
+
+if DOWN_FLAG.exists():
+    DOWN_FLAG.unlink()
+    alert.send("[RECOVERED] monitor can reach ClickHouse again")
 
 run_id = uuid.uuid4().hex[:12]
 results = []
