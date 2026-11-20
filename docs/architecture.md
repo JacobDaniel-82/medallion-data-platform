@@ -12,6 +12,7 @@ A data engineering platform that ingests data from three sources into ClickHouse
 - Docker Compose: Local service orchestration
 - GitHub Actions: Continuous integration
 - Apache Superset: Dashboard
+- Alerts and Monitoring: Discord webhook alerts
 
 ## Data Sources
 - Binance public klines API, historical (BTCUSDT, 1 minute, rolling 30 days)
