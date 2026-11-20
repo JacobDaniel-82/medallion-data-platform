@@ -93,6 +93,12 @@ The live NiFi flow only collects while running. The daily crypto batch reload re
 ## Remaining Work
 - Continuous deployment, if a deployment environment becomes available.
 
+## Data Contracts and Ingestion Enforcement
+Each source has a YAML contract in `contracts/` (fields, record rules, warehouse checks, freshness, volume and reject-rate limits). Every source lands raw values in a `Null`-engine landing table. Chained materialized views check each record and route it to bronze (valid) or quarantine (invalid, with the failed rule names). The batch and Baserow loaders insert first, delete the previous load only after the contract passes, and roll back and fail on a breach.
+
+## Monitoring and Alerting
+`scripts/run_checks.py` runs 21 checks (freshness, volume, quarantine rate, reconciliation between layers, anomalies) and stores the results in `pipeline_check_results`. The `pipeline_monitor` DAG runs it every 5 minutes. The daily DAGs run the bronze checks as a quality gate before dbt, so a failed gate leaves silver and gold stale instead of wrong. Discord alerts are sent on state changes and on recovery, and Airflow alerts on task retries and failures. The Superset Pipeline Health tab shows the same results. See `docs/runbook.md`.
+
 ## Local Services
 - ClickHouse HTTP: http://localhost:8123
 - Airflow UI: http://localhost:8082

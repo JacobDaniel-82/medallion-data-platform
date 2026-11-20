@@ -78,14 +78,28 @@ def freshness(domain, layer, name, sql, warn_s, error_s):
     add(domain, layer, name, "freshness", seconds, warn_s, error_s, f"{seconds / 60:.1f} minutes since the latest record")
 
 
+def reconcile(domain, layer, name, left_sql, right_sql, label):SETTLE_SQL = {
+    "crypto": "SELECT dateDiff('second', max(ingested_at), now64(3)) FROM bronze_market_candles WHERE source = 'batch'",
+    "baserow": "SELECT dateDiff('second', max(extracted_at), now64(3)) FROM bronze_baserow_rows",
+}
+
+SETTLE_SQL = {
+    "crypto": "SELECT dateDiff('second', max(ingested_at), now64(3)) FROM bronze_market_candles WHERE source = 'batch'",
+    "baserow": "SELECT dateDiff('second', max(extracted_at), now64(3)) FROM bronze_baserow_rows",
+}
+
 def reconcile(domain, layer, name, left_sql, right_sql, label):
+    # Skip while a daily load is still flowing through the layers.
+    if scalar(SETTLE_SQL[domain]) < 600:
+        add(domain, layer, name, "reconciliation", 0, RECONCILE_WARN_PCT, RECONCILE_ERROR_PCT,
+            "skipped: bronze was loaded in the last 10 minutes, later layers may still be rebuilding")
+        return
     left, right = scalar(left_sql), scalar(right_sql)
     if left:
         diff_pct = 100.0 * abs(left - right) / left
     else:
         diff_pct = 0.0 if right == 0 else 100.0
     add(domain, layer, name, "reconciliation", diff_pct, RECONCILE_WARN_PCT, RECONCILE_ERROR_PCT, f"{label}: {left} vs {right}")
-
 
 def reject_rate(rejected, accepted):
     total = rejected + accepted

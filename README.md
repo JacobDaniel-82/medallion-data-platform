@@ -1,6 +1,6 @@
 # Medallion Data Platform
 
-An end-to-end data engineering project that ingests data from three sources into ClickHouse and transforms each of them with a Medallion Architecture (bronze, silver, gold). It started as a crypto market data pipeline and was extended with a Baserow e-commerce source.
+An end-to-end data engineering project that ingests data from three sources into ClickHouse and transforms each with a Medallion Architecture (bronze, silver, gold). It also makes the pipeline trustworthy: data contracts are enforced at ingestion, bad records are quarantined instead of loaded, quality and freshness checks run from bronze to gold, and monitoring sends alerts before a dashboard goes wrong.
 
 | Source | Ingestion | Orchestration | Domain |
 |---|---|---|---|
@@ -10,143 +10,162 @@ An end-to-end data engineering project that ingests data from three sources into
 
 ## Architecture
 
-- **Apache NiFi:** Near-real-time ingestion. Polls the Binance public klines REST API every 60 seconds, splits the response into individual candles, and inserts only closed candles into ClickHouse bronze. The forming candle is dropped so partial data never lands.
-- **Apache Airflow:** Runs two daily pipelines, each loading bronze and then running and testing its dbt models:
-  - `crypto_medallion_pipeline` (02:00 UTC)
-  - `baserow_medallion_pipeline` (03:00 UTC)
-  
-  A separate `historical_crypto_ingestion` DAG loads only the crypto batch data and is triggered manually.
+- **Apache NiFi:** Near-real-time ingestion. Polls the Binance klines API every 60 seconds, splits the response into candles, drops the still-forming one, and posts the rest to the ClickHouse landing table. Timeouts are retried, and permanent errors wait in a funnel queue.
+- **Apache Airflow:** Four DAGs:
+  - `crypto_medallion_pipeline` (02:00 UTC): load bronze, quality gate, dbt run, dbt test
+  - `baserow_medallion_pipeline` (03:00 UTC): load bronze, quality gate, dbt run, dbt test
+  - `pipeline_monitor` (every 5 minutes): run all checks and alert
+  - `historical_crypto_ingestion`: manual batch load only
 - **dbt:** Builds and tests silver and gold models (ELT inside ClickHouse), organized by source domain.
-- **ClickHouse:** Stores bronze, silver, and gold analytical tables.
-- **Docker Compose:** Provides a reproducible local environment.
+- **ClickHouse:** Stores landing, quarantine, bronze, silver and gold tables, plus the monitoring results.
+- **Apache Superset:** Dashboards on silver, gold and pipeline health, using a read-only ClickHouse user.
+- **Discord webhook:** Receives alerts (Slack webhooks work the same way).
+- **Docker Compose:** Reproducible local environment.
 - **GitHub Actions:** Continuous integration. Builds and tests all dbt models against a temporary ClickHouse on every push.
 
 ```
-Binance REST API (history) -> Airflow + Python -> ClickHouse bronze (crypto)
-Binance REST API (live)    -> NiFi              -> ClickHouse bronze (crypto)
-Baserow REST API           -> Airflow + Python -> ClickHouse bronze (raw JSON)
-ClickHouse bronze -> dbt -> silver -> dbt -> gold
+Binance REST API (history) -> Airflow + Python -> landing -> contract rules -> bronze | quarantine
+Binance REST API (live)    -> NiFi              -> landing -> contract rules -> bronze | quarantine
+Baserow REST API           -> Airflow + Python -> landing -> contract rules -> bronze | quarantine
+bronze -> quality gate -> dbt -> silver -> dbt -> gold -> Superset
+run_checks.py (every 5 min) -> pipeline_check_results -> Discord alerts + Superset health tab
 ```
-- **Apache Superset:** Dashboards on the silver and gold layers, using a read-only ClickHouse user.
 
 ![dbt lineage](docs/lineage.png)
 
+![Dashboard](docs/dashboard.jpg)
+
+## Data Contracts
+
+One YAML file per source in `contracts/` describes what a valid record is and what the service levels are. The ingestion rules, the checks and the loaders read their thresholds from these files.
+
+| Contract | Freshness warn / error | Minimum volume | Max reject rate (on breach) |
+|---|---|---|---|
+| `binance_klines_batch.yaml` | 26 h / 50 h | 40,000 rows per load | 1% (fail the run) |
+| `binance_klines_live.yaml` | 5 min / 15 min | 50 candles per hour | 5% (alert) |
+| `baserow_ecommerce.yaml` | 26 h / 50 h | 100 customers, 20 products, 1,500 orders | 3% (fail the run) |
+
+Each contract also lists the field rules, the record rules and the warehouse checks, with a severity:
+- **error:** the record is rejected, or the pipeline stops and alerts.
+- **warn:** the record loads, is counted and is flagged.
+- **info:** noted only, such as the overlapping live polls, which silver deduplicates.
+
+## Ingestion Enforcement
+
+Every source writes raw values into a landing table (ClickHouse `Null` engine, which stores nothing). Chained materialized views check each record against the contract:
+
+- **Valid records** go to `bronze_market_candles` or `bronze_baserow_rows`.
+- **Invalid records** go to `quarantine_market_candles` or `quarantine_baserow_rows`, with the list of rules they failed, kept for 90 days.
+
+Candle rules: parsable positive prices, non-negative volume, high not below low, high and low covering open and close, a one-minute window, a minute-aligned open time, and a closed candle. Baserow rules: code formats, email format, allowed statuses (case-insensitive), quantity from 1 to 100, plausible dates, discount from 0 to 100, and positive prices.
+
+The batch and Baserow loaders insert first and delete the previous load afterwards. If a load breaches its contract (reject rate or minimum rows), it removes what it just loaded, keeps the previous data and fails, so Airflow alerts. Rules that compare rows (duplicates, orders pointing at missing customers) cannot be checked one record at a time, so dbt tests and the monitoring checks cover them.
+
 ## Domain 1: Crypto Market Data
 
-- Market: BTC/USDT, 1-minute candles
-- Batch history: rolling window of approximately 30 days
-- Live: one poll per minute; closed candles only
-
-**Bronze** (`bronze_market_candles`): Raw candles from both sources, append-only. Rows carry a `source` tag (`batch` or `nifi`) and an `ingested_at` timestamp. Overlapping live polls and batch/live overlap can create duplicate candles here by design.
-
-**Silver** (`silver_market_candles`): Closed candles with sanity checks applied (positive prices, high >= low, non-negative volume), deduplicated to one row per `(symbol, interval, open_time)`, keeping the most recently ingested copy.
-
-**Gold:**
-- `gold_daily_price_summary`: daily open, high, low, close, volume, trades, price change and percent change, with a flag for complete days (1,440 candles).
-- `gold_hourly_market_stats`: hourly OHLC, volume and trades, with a flag for complete hours (60 candles).
-- `gold_daily_volatility`: daily high-low range as a percent of the open, a 7-day average range, and volume relative to the 7-day average (complete days only).
-- `gold_daily_volume_profile`: daily volume with a text sparkline of volume by hour of day, for the dashboard.
+- Market: BTC/USDT, 1-minute candles. Batch history: rolling 30 days. Live: one poll per minute, closed candles only.
+- **Bronze** (`bronze_market_candles`): validated candles from both sources, append-only, tagged `batch` or `nifi`. Overlapping polls can create duplicates here by design.
+- **Silver** (`silver_market_candles`): sanity-checked, deduplicated to one row per `(symbol, interval, open_time)`, keeping the most recently ingested copy.
+- **Gold:** `gold_daily_price_summary`, `gold_hourly_market_stats`, `gold_daily_volatility`, `gold_daily_volume_profile`.
 
 ## Domain 2: Baserow E-commerce
 
-Baserow holds three tables in a database named `ecommerce_demo`: `customers`, `products` and `orders`. The data is mock data generated by `scripts/generate_baserow_mock_data.py` (fixed random seed) and imported into Baserow as CSV. It contains deliberate quality problems for silver to clean: duplicate customers with different email casing, missing countries, inconsistent status spelling, and invalid quantities.
+Three Baserow tables (`customers`, `products`, `orders`) hold mock data from `scripts/generate_baserow_mock_data.py`, with deliberate quality problems: duplicate customers with different email casing, missing countries, inconsistent status spelling and invalid quantities.
 
-**Bronze** (`bronze_baserow_rows`): One generic table. Every Baserow row lands as raw JSON in `payload`, with `table_name`, Baserow's `row_id` and `extracted_at`. Each load replaces the rows of the table it reloads, so reruns never duplicate. All tables are fetched before anything is changed, so a failed API call never empties bronze.
+- **Bronze** (`bronze_baserow_rows`): every row as raw JSON. The 19 orders with invalid quantities are quarantined here and never loaded.
+- **Silver:** `silver_customers`, `silver_customer_code_map`, `silver_products`, `silver_orders` (typed, cleaned, duplicates merged).
+- **Gold:** `gold_order_facts`, `gold_daily_sales`, `gold_customer_summary`, `gold_product_performance`. Revenue counts only Delivered and Shipped orders.
 
-**Silver:**
-- `silver_customers`: parsed and typed, emails normalized, duplicate customers merged (lowest customer code kept), missing countries set to `Unknown`.
-- `silver_customer_code_map`: maps every customer code to its canonical code, so orders placed under a duplicate customer are attributed to the original.
-- `silver_products`: parsed and typed, invalid prices removed.
-- `silver_orders`: parsed and typed, status spelling normalized, orders with a quantity of 0 or less removed, customer codes mapped to canonical codes.
+## Quality Checks and Monitoring
 
-**Gold:**
-- `gold_order_facts`: one row per order, joined to customer and product, with gross and net amounts. Revenue counts only Delivered and Shipped orders.
-- `gold_daily_sales`: orders, cancellations, returns, units, gross and net revenue and average order value per day.
-- `gold_customer_summary`: orders, units, lifetime net revenue and first/last order date per customer.
-- `gold_product_performance`: orders, units, net revenue, return rate and average discount per product.
+- **35 dbt tests:** 13 for crypto, 22 for Baserow (keys, accepted values, referential checks, no lost orders, reconciliation of revenue).
+- **21 monitoring checks** in `scripts/run_checks.py`, every result stored in `pipeline_check_results` and summarized in the view `pipeline_health_latest`:
+  - Freshness (7): live and batch bronze, Baserow bronze, and the last build of four silver and gold tables
+  - Volume (5): live candles per hour, batch rows, and rows per Baserow table
+  - Quarantine rates (3): live, batch and Baserow
+  - Reconciliation (4): bronze to silver to gold for candles and orders
+  - Anomalies (2): one-minute price jumps above 2% (warn only, real crashes must not be rejected) and missing candle minutes
+- **Quality gates:** before dbt runs, the daily DAGs run the bronze checks (row counts, reject rates, candle gaps). If one fails, dbt does not run, so silver, gold and the dashboard go stale instead of wrong.
+- **Alerts** go to Discord only when a check changes state, plus a recovery message, so a long outage does not spam the channel. Airflow also alerts on every task retry and failure, and the monitor sends one alert if it cannot reach ClickHouse.
+- **Superset health tab:** check status, live freshness trend, rejected records per hour and the reasons.
 
-## Data Quality
+See `docs/runbook.md` for what each alert means and how to respond.
 
-48 dbt tests in total, run with `dbt test`:
+## Failure Rehearsal
 
-- **Crypto (13):** not-null checks on key columns, uniqueness of the daily volatility key, no duplicate candles in silver, valid price and volume values in silver, and sanity limits on candle counts per day and per hour in gold.
-- **Baserow (22 + checks inside):** not-null and uniqueness on keys, accepted values for order status, every order points to an existing customer and product, no orders are lost between silver and the gold fact table, and daily revenue reconciles with per-customer revenue.
+| What was broken | What happened |
+|---|---|
+| NiFi stopped | Freshness warned at 5 minutes and errored at 15, both with Discord alerts, and recovered after restart |
+| Four bad Baserow records sent through the landing table | All four quarantined with their rule names (`quantity_range`, `status_allowed`, `discount_range`, `email_format`), the valid record in the same insert loaded, and reconciliation warned until cleanup |
+| Load breaching a stricter contract (reject limit 0.5%) | Loader rolled back, bronze stayed unchanged, retry and failure alerts sent, downstream tasks skipped |
+| ClickHouse stopped | One alert on the outage and one on recovery |
+| Broken dbt model | The broken model failed alone and the others built, so silver and gold stayed intact |
+| Impossible candle (high below low) | Quarantined with the failed rule names and never reached bronze |
+| Real incidents (DNS failure, memory limit, laptop off overnight) | Retries, failure alerts and freshness errors that cleared after recovery |
+
+## Known Limitations
+
+- If Docker or Airflow itself is down, nothing can send alerts. An external heartbeat service would cover this.
+- NiFi's funnel queue (permanently rejected requests) is not monitored directly, only through the live volume and freshness checks.
+- A deleted customer or product is caught by dbt tests only after gold has been rebuilt.
+- The contract protects the ingestion path. Direct writes into bronze bypass it, and production would restrict bronze to the pipeline user.
+- The live-volume check recovers slowly after an outage, because it counts candles collected in the last hour, and NiFi cannot backfill missed minutes (the daily batch does).
+- The stack needs about 4 GB of Docker memory. Keep Superset stopped when not in use.
+- Superset uses a local SQLite metadata database, and the data volumes live on one machine.
 
 ## Dashboard (Apache Superset)
 
-A Superset dashboard, **Medallion Warehouse Analytics**, reads the gold and silver layers with a read-only ClickHouse user. It has two tabs, Crypto Market and E-commerce, and its charts use ClickHouse-specific analytical functions:
+The **Medallion Warehouse Analytics** dashboard has three tabs (Crypto Market, E-commerce, Pipeline Health). Its charts use ClickHouse-specific functions:
 
-- `exponentialTimeDecayedAvg` as a window function for moving averages on price
-- `ASOF JOIN` to compare each hour with the closest earlier hour 24 hours back
-- `quantilesTDigest` for approximate volume and order-value percentiles
-- `histogram()` for the distribution of 1-minute returns
-- `ORDER BY ... WITH FILL` to expose missing hours as zero-candle rows
-- `sparkbar` for a text bar chart per day (built in dbt as `gold_daily_volume_profile`)
-- `corr`, `argMax`/`argMin`, and the `-If` combinators (`sumIf`, `countIf`, `uniqIf`)
-- `LIMIT n BY` for the top 3 products per category
-- `topKWeighted` and `retention()` for top categories and weekly customer retention
+- `exponentialTimeDecayedAvg` as a window function for moving averages
+- `ASOF JOIN` for 24-hour price change
+- `quantilesTDigest`, `histogram()`, `corr`, `argMax`/`argMin`
+- `ORDER BY ... WITH FILL` to expose missing hours
+- `sparkbar` (built in dbt as `gold_daily_volume_profile`, because Superset's SQL parser rejects parametric aggregates)
+- `LIMIT n BY`, `topKWeighted`, `retention()`, and the `-If` combinators
 
-   ![Dashboard (crypto tab on top, e-commerce tab below)](docs/dashboard.jpg)
-
-Files:
-- `superset/Dockerfile`: Superset image with the `clickhouse-connect` driver.
-- `superset/dashboard_queries.sql`: the SQL behind each dataset.
-- `superset/dashboard_export/`: the exported dashboard bundle. Import it from Dashboards, Import.
+Files: `superset/Dockerfile` (image with the `clickhouse-connect` driver), `superset/dashboard_queries.sql` (the SQL behind the datasets), `superset/dashboard_export/` (importable bundle).
 
 Setup after `docker compose up -d`:
 
-1. Initialize Superset once:
-   `docker exec -it medallion-superset superset db upgrade`
-   `docker exec -it medallion-superset superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com`
-   `docker exec -it medallion-superset superset init`
-2. Create the read-only ClickHouse user (choose your own password):
-   `CREATE USER superset_ro IDENTIFIED BY '<password>'` and `GRANT SELECT ON medallion_warehouse.* TO superset_ro`
-3. In Superset (http://localhost:8088), add a ClickHouse Connect database with host `clickhouse`, port `8123`, database `medallion_warehouse` and the read-only user, then import `superset/dashboard_export/medallion_warehouse_analytics.zip`.
-
-Superset's SQL parser rejects some ClickHouse syntax, such as parametric aggregates like `sparkbar(24, 0, 23)(...)`. Queries that need it are built as dbt models and read with a plain `SELECT`.
-
-## Handling Gaps and Reruns
-
-- The live NiFi flow only collects while it is running, so downtime leaves gaps. The daily crypto batch re-pulls the last 30 days and replaces its own `batch` rows without touching `nifi` rows. Silver deduplicates any overlap, so the batch reload heals gaps with no duplicates downstream.
-- The Baserow loader replaces each table's bronze rows on every run, so reruns are safe.
-- Both DAGs use `max_active_runs=1`, so two runs of the same DAG never overlap.
+1. Initialize once: `docker exec -it medallion-superset superset db upgrade`, then `superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com`, then `superset init`.
+2. Create a read-only ClickHouse user: `CREATE USER superset_ro IDENTIFIED BY '<password>'` and `GRANT SELECT ON medallion_warehouse.* TO superset_ro`.
+3. In Superset (http://localhost:8088), add a ClickHouse Connect database with host `clickhouse`, port `8123`, database `medallion_warehouse` and that user, then import the bundle from `superset/dashboard_export/`.
 
 ## CI/CD
 
-- **CI (implemented):** The workflow in `.github/workflows/dbt-ci.yml` starts a temporary ClickHouse, creates the bronze tables from `clickhouse/init/`, loads synthetic crypto candles and synthetic Baserow rows (both deliberately messy), then runs `dbt run` and `dbt test` on the whole project. A broken model or failing test turns the push red.
-- **CD (future work):** There is no server to deploy to, since the stack runs locally in Docker. With a target environment, a deploy job would run after CI passes on `main` and update the DAGs and dbt project there.
+- **CI:** `.github/workflows/dbt-ci.yml` starts a temporary ClickHouse, creates all tables from `clickhouse/init/`, loads synthetic crypto and Baserow data (deliberately messy), then runs `dbt run` and `dbt test`. A broken model or failing test turns the push red.
+- **CD:** future work. The stack runs locally, so there is no deployment target.
 
 ## Project Structure
 
-- `nifi/flows/`: Exported NiFi flow definition (`Binance_Live_Market_Ingestion.json`).
-- `airflow/dags/`: `crypto_medallion_pipeline.py`, `baserow_medallion_pipeline.py`, `historical_crypto_ingestion.py`.
-- `airflow/Dockerfile`: Airflow image with dbt installed in its own virtual environment.
-- `clickhouse/init/`: Bronze table DDL, run automatically on first start of an empty volume.
-- `dbt/models/crypto/`: Crypto silver and gold models, source and schema files.
-- `dbt/models/baserow/`: Baserow silver and gold models, source and schema files.
-- `dbt/tests/crypto/`, `dbt/tests/baserow/`: Singular SQL tests per domain.
-- `scripts/`: `load_historical_candles.py`, `load_baserow_tables.py`, `generate_baserow_mock_data.py`.
-- `docs/`: Architecture documentation and the dbt lineage screenshot.
-- `.github/workflows/`: CI workflow.
-- `superset/`: Superset image (ClickHouse driver), dashboard SQL, and the exported dashboard bundle.
+- `contracts/`: data contracts (one YAML per source)
+- `nifi/flows/`: exported NiFi flow
+- `airflow/dags/`: the four DAGs. `airflow/Dockerfile`: Airflow image with dbt in its own virtual environment
+- `clickhouse/init/`: table DDL, run automatically on first start (bronze, ingestion contract, Baserow contract, monitoring)
+- `dbt/`: models and tests, split into `crypto` and `baserow`
+- `scripts/`: loaders, `run_checks.py`, `alert.py`, `make_nifi_insert_url.py`, mock data generator
+- `scenarios/`: SQL used to inject bad records for the failure rehearsal
+- `superset/`: dashboard image, queries and export
+- `docs/`: architecture, runbook, screenshots
+- `.github/workflows/`: CI
 
 ## Running Locally
 
-1. Copy `.env.example` to `.env` and set the passwords. NiFi requires a password of at least 12 characters.
-2. Baserow setup: create a Baserow account and a database named `ecommerce_demo`. Run `python scripts/generate_baserow_mock_data.py`, then import the three CSV files from `data/baserow/` as tables named `customers`, `products` and `orders`. Create a read-only database token and put it in `.env` together with the three table IDs (`BASEROW_TOKEN`, `BASEROW_CUSTOMERS_TABLE_ID`, `BASEROW_PRODUCTS_TABLE_ID`, `BASEROW_ORDERS_TABLE_ID`).
-3. Build and start the services: `docker compose up -d --build`
-4. Import `nifi/flows/Binance_Live_Market_Ingestion.json` into NiFi (https://localhost:8443/nifi), set the ClickHouse password on the final InvokeHTTP processor, and start the process group.
-5. In Airflow (http://localhost:8082), unpause and trigger `crypto_medallion_pipeline`, wait for it to finish, then trigger `baserow_medallion_pipeline`. Each loads its bronze data, then builds and tests its silver and gold models.
-6. Optional, to run dbt from your own machine: `pip install dbt-core dbt-clickhouse`, then from the `dbt/` folder, with `CLICKHOUSE_PASSWORD` set as an environment variable, run `dbt run --profiles-dir .` and `dbt test --profiles-dir .`
+1. Copy `.env.example` to `.env` and fill in the passwords (NiFi needs at least 12 characters), the Baserow token and table IDs, `SUPERSET_SECRET_KEY` and `ALERT_WEBHOOK_URL`.
+2. Create a Discord (or Slack) webhook in a private channel and put its URL in `ALERT_WEBHOOK_URL`. Keep it out of the repository.
+3. Baserow: create a database `ecommerce_demo`, run `python scripts/generate_baserow_mock_data.py`, and import the three CSV files from `data/baserow/` as tables `customers`, `products` and `orders`.
+4. Build and start: `docker compose up -d --build`. The scripts in `clickhouse/init/` create all tables on first start.
+5. NiFi (https://localhost:8443/nifi): import `nifi/flows/Binance_Live_Market_Ingestion.json`, set the ClickHouse password on the final InvokeHTTP processor, and start the group. `python scripts/make_nifi_insert_url.py` prints the URL for its HTTP URL property.
+6. Airflow (http://localhost:8082): unpause the DAGs, then trigger `crypto_medallion_pipeline` and, after it finishes, `baserow_medallion_pipeline`. Unpause `pipeline_monitor` to start the checks.
+7. Allow about an hour after NiFi starts before the live-volume check turns green.
+8. Optional: set up Superset as described above.
 
 ## Status
 
-- Crypto batch ingestion (Airflow): done
-- Crypto live ingestion (NiFi): done
-- Baserow ingestion (Airflow): done
-- Silver and gold dbt models for both domains: done
-- dbt tests and lineage docs: done
-- dbt scheduled through Airflow for both domains: done
-- CI with GitHub Actions: done
-- CD: future work
-- Superset dashboard: done
+- Crypto, live and Baserow ingestion, silver and gold models: done
+- Superset dashboard with ClickHouse-specific analytics: done
+- Data contracts, ingestion enforcement and quarantine: done
+- Quality checks, monitoring, alerts and the health tab: done
+- Failure rehearsal and runbook: done
+- CI: done. CD: future work

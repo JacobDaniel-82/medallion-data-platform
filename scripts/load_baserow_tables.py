@@ -93,7 +93,7 @@ def main():
         reject_rate = n_rejected / len(rows) if rows else 1.0
         print(f"{name}: fetched {len(rows)}, accepted {loaded}, quarantined {n_rejected} (reject rate {reject_rate:.2%}).")
         if reject_rate > max_reject_rate:
-            problems.append(f"{name}: reject rate {reject_rate:.2%} is above the contract limit {max_reject_rate:.0%}")
+            problems.append(f"{name}: reject rate {reject_rate:.2%} is above the contract limit {max_reject_rate:.2%}")
         if loaded < min_rows[name]:
             problems.append(f"{name}: only {loaded} valid rows, the contract requires at least {min_rows[name]}")
 
