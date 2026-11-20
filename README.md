@@ -101,7 +101,8 @@ See `docs/runbook.md` for what each alert means and how to respond.
 | ClickHouse stopped | One alert on the outage and one on recovery |
 | Broken dbt model | The broken model failed alone and the others built, so silver and gold stayed intact |
 | Impossible candle (high below low) | Quarantined with the failed rule names and never reached bronze |
-| Real incidents (DNS failure, memory limit, laptop off overnight) | Retries, failure alerts and freshness errors that cleared after recovery |
+| Laptop off overnight, repeatedly | Freshness and gap errors on the next start, and recovery messages once the batch reload and NiFi caught up |
+| DNS failure and ClickHouse memory limit (before alerting existed) | Airflow retried and failed visibly. These incidents are why task retry and failure alerts were added |
 
 ## Known Limitations
 
@@ -112,6 +113,7 @@ See `docs/runbook.md` for what each alert means and how to respond.
 - The live-volume check recovers slowly after an outage, because it counts candles collected in the last hour, and NiFi cannot backfill missed minutes (the daily batch does).
 - The stack needs about 4 GB of Docker memory. Keep Superset stopped when not in use.
 - Superset uses a local SQLite metadata database, and the data volumes live on one machine.
+- The Running Locally steps were verified piece by piece on one machine, not from a clean machine. CI verifies table creation and the dbt models from an empty database.
 
 ## Dashboard (Apache Superset)
 
