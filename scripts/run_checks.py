@@ -186,8 +186,9 @@ reconcile("baserow", "gold", "silver_to_gold_orders",
 
 # ---- Anomalies ----
 n = scalar("""
-    SELECT countIf(abs(r) > %s) FROM (
-        SELECT (close_price / lagInFrame(close_price, 1, close_price) OVER (ORDER BY open_time) - 1) * 100 AS r
+    SELECT countIf(abs(r) > %s AND gap_ms = 60000) FROM (
+        SELECT (close_price / lagInFrame(close_price, 1, close_price) OVER (ORDER BY open_time) - 1) * 100 AS r,
+               toUnixTimestamp64Milli(open_time) - lagInFrame(toUnixTimestamp64Milli(open_time), 1, toUnixTimestamp64Milli(open_time) - 60000) OVER (ORDER BY open_time) AS gap_ms
         FROM (SELECT open_time, argMax(close_price, ingested_at) AS close_price
               FROM bronze_market_candles
               WHERE open_time >= now64(3) - INTERVAL 24 HOUR
