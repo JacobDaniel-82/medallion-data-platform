@@ -181,7 +181,23 @@ services:
     volumes:
       - minio_data:/data
 
-
+  producer:
+    build: ./producer
+    image: medallion-producer:1
+    container_name: crypto-producer
+    restart: unless-stopped
+    mem_limit: 128m
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: binance.klines.1m
+      KAFKA_DLQ_TOPIC: binance.klines.1m.dlq
+      SYMBOL: BTCUSDT
+      INITIAL_BACKFILL_MINUTES: "10"
+      SCHEMA_PATH: /contracts/schemas/binance_klines_live.schema.json
+    volumes:
+      - ./contracts:/contracts:ro
 
 volumes:
   clickhouse_data:
