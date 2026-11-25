@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "binance_klines_live/1.0.0",
+  "title": "Binance 1-minute kline (closed candle)",
+  "description": "Message schema for the Kafka topic binance.klines.1m. Derived from contracts/binance_klines_live.yaml. This checks structure and format only. Value rules (positive prices, high not below low, and so on) stay in the ClickHouse ingestion views, so they live in one place.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "symbol", "interval", "open_time", "close_time",
+    "open_price", "high_price", "low_price", "close_price", "volume",
+    "number_of_trades", "produced_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9]{5,20}$" },
+    "interval": { "const": "1m" },
+    "open_time": { "type": "integer", "exclusiveMinimum": 0, "multipleOf": 60000 },
+    "close_time": { "type": "integer", "exclusiveMinimum": 0 },
+    "open_price": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "high_price": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "low_price": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "close_price": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "volume": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "number_of_trades": { "type": "integer", "minimum": 0 },
+    "produced_at": { "type": "integer", "exclusiveMinimum": 0 }
+  }
+}
