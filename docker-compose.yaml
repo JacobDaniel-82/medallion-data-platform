@@ -199,6 +199,39 @@ services:
     volumes:
       - ./contracts:/contracts:ro
 
+  flink-jobmanager:
+    build: ./flink
+    image: medallion-flink:1.20
+    container_name: crypto-flink-jobmanager
+    restart: unless-stopped
+    mem_limit: 900m
+    command: jobmanager
+    ports:
+      - "${FLINK_UI_PORT:-8083}:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 768m
+    volumes:
+      - ./flink/jobs:/opt/jobs:ro
+
+  flink-taskmanager:
+    image: medallion-flink:1.20
+    container_name: crypto-flink-taskmanager
+    restart: unless-stopped
+    mem_limit: 1500m
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.memory.process.size: 1280m
+        taskmanager.memory.managed.fraction: 0.2
+        taskmanager.numberOfTaskSlots: 1
+    volumes:
+      - ./flink/jobs:/opt/jobs:ro
+
 volumes:
   clickhouse_data:
   airflow_postgres_data:
