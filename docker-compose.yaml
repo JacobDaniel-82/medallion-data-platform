@@ -209,11 +209,24 @@ services:
     ports:
       - "${FLINK_UI_PORT:-8083}:8081"
     environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      SCHEMA_PATH: /contracts/schemas/binance_klines_live.schema.json
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         jobmanager.memory.process.size: 768m
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+        state.backend.type: hashmap
+        state.checkpoints.dir: file:///opt/flink/checkpoints
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 100000
+        restart-strategy.fixed-delay.delay: 10 s
     volumes:
       - ./flink/jobs:/opt/jobs:ro
+      - ./contracts:/contracts:ro
+      - flink_checkpoints:/opt/flink/checkpoints
 
   flink-taskmanager:
     image: medallion-flink:1.20
@@ -224,13 +237,22 @@ services:
     depends_on:
       - flink-jobmanager
     environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      SCHEMA_PATH: /contracts/schemas/binance_klines_live.schema.json
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.memory.process.size: 1280m
         taskmanager.memory.managed.fraction: 0.2
         taskmanager.numberOfTaskSlots: 1
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: EXACTLY_ONCE
+        state.backend.type: hashmap
+        state.checkpoints.dir: file:///opt/flink/checkpoints
     volumes:
       - ./flink/jobs:/opt/jobs:ro
+      - ./contracts:/contracts:ro
+      - flink_checkpoints:/opt/flink/checkpoints
 
 volumes:
   clickhouse_data:
@@ -239,3 +261,4 @@ volumes:
   superset_home:
   kafka_data:
   minio_data:
+  flink_checkpoints:
