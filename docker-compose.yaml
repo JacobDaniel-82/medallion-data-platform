@@ -254,6 +254,25 @@ services:
       - ./contracts:/contracts:ro
       - flink_checkpoints:/opt/flink/checkpoints
 
+  archiver:
+    build: ./archiver
+    image: medallion-archiver:1
+    container_name: crypto-archiver
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      - kafka
+      - minio
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: binance.klines.1m
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      ARCHIVE_BUCKET: archive
+      FLUSH_SECONDS: "300"
+      FLUSH_MESSAGES: "1000"
+
 volumes:
   clickhouse_data:
   airflow_postgres_data:
