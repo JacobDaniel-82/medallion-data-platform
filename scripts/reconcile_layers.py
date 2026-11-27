@@ -1,7 +1,9 @@
 import os
 import subprocess
 import sys
+from envfile import load_env
 
+load_env()
 import clickhouse_connect
 
 TOPIC = "binance.klines.1m"
