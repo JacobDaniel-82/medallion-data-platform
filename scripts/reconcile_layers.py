@@ -56,10 +56,12 @@ def main():
     total, keys = topic_keys(TOPIC)
     keyed = [k for k in keys if k != "null"]
     kafka_keys = set(keyed)
+    cutoff = max(int(k.rsplit("|", 1)[1]) for k in kafka_keys)
     dlq_start, dlq_end = offsets(DLQ_TOPIC)
 
     bronze = [key(*r) for r in rows(
-        "SELECT symbol, `interval`, toUnixTimestamp64Milli(open_time) FROM bronze_market_candles WHERE source = 'flink'")]
+        "SELECT symbol, `interval`, toUnixTimestamp64Milli(open_time) FROM bronze_market_candles "
+        f"WHERE source = 'flink' AND toUnixTimestamp64Milli(open_time) <= {cutoff}")]
     quarantined = {key(*r) for r in rows(
         "SELECT symbol, `interval`, open_time_ms FROM quarantine_market_candles WHERE source = 'flink'")}
     late = {key(*r) for r in rows(
@@ -71,7 +73,8 @@ def main():
     bronze_set, silver_set = set(bronze), set(silver)
     missing = kafka_keys - (bronze_set | quarantined | late)
     unexpected = bronze_set - kafka_keys
-    silver_missing = bronze_set - silver_set
+    silver_max = rows("SELECT toUnixTimestamp64Milli(max(open_time)) FROM silver_market_candles")[0][0]
+    silver_missing = {k for k in bronze_set if int(k.rsplit("|", 1)[1]) <= silver_max} - silver_set
 
     print(f"{'LAYER':<30}{'EVENTS':>8}{'DISTINCT':>10}{'EXTRA COPIES':>14}{'MISSING':>9}")
     print(f"{'Kafka topic (all messages)':<30}{total:>8}{len(kafka_keys):>10}{len(keyed) - len(kafka_keys):>14}{'-':>9}")
